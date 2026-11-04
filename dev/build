@@ -1,0 +1,6 @@
+#!/bin/bash
+# Assemble the single-file game from the dev parts.
+# Usage: bash dev/build   (run from the repo root)
+cd "$(dirname "$0")/.." || exit 1
+cat dev/p1.html dev/p2.js dev/p3.js dev/p4.js dev/p5.js > index.html
+echo "built index.html ($(wc -c < index.html) bytes)"

@@ -1,0 +1,4 @@
+* text=auto
+# shell scripts must stay LF or bash chokes on CRLF
+dev/build text eol=lf
+*.sh text eol=lf

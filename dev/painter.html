@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>L0 texture painter v2</title></head>
+<body style="background:#222;font-family:monospace;color:#ccc;margin:8px">
+<div id="status">painting...</div>
+<div id="out"></div>
+<canvas id="wall" width="512" height="512"></canvas>
+<canvas id="carpet" width="512" height="512"></canvas>
+<canvas id="ceil" width="512" height="512"></canvas>
+<canvas id="panel" width="512" height="512"></canvas>
+<canvas id="arms" width="600" height="368"></canvas>
+<script>
+'use strict';
+var W = 512;
+function ctxOf(id){ return document.getElementById(id).getContext('2d'); }
+function vhash(ix, iy, s){
+  var h = (Math.imul(ix|0, 0x9E3779B1) ^ Math.imul(iy|0, 0x85EBCA77) ^ Math.imul(s|0, 0xC2B2AE3D)) | 0;
+  h = (h ^ (h >>> 15)) | 0; h = Math.imul(h, 0x27D4EB2D); h = (h ^ (h >>> 13)) | 0;
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+function vnoise(x, y, s){
+  var ix = Math.floor(x), iy = Math.floor(y), fx = x - ix, fy = y - iy;
+  var u = fx*fx*(3-2*fx), v = fy*fy*(3-2*fy);
+  var a = vhash(ix,iy,s), b = vhash(ix+1,iy,s), c = vhash(ix,iy+1,s), d = vhash(ix+1,iy+1,s);
+  return a + (b-a)*u + (c-a)*v + (a-b-c+d)*u*v;
+}
+function fbm(x, y, s, oct){ var v=0, a=0.55, f=1, i; for(i=0;i<oct;i++){ v += a*vnoise(x*f,y*f,s+i); f*=2; a*=0.5; } return v; }
+function clamp255(v){ return v<0?0:v>255?255:v|0; }
+
+/* ---- WALL: iconic wallpaper; softer stripe pairs, stronger mottling, damp grime. */
+function paintWall(g){
+  var img = g.createImageData(W, W), d = img.data, x, y, i;
+  var period = 46, sw = 8;
+  for (y = 0; y < W; y++) for (x = 0; x < W; x++){
+    var n = fbm(x/28, y/28, 101, 4);
+    var fine = fbm(x/3.5, y/3.5, 202, 2);
+    var sxp = x % period, dark = 0;
+    if (sxp < sw) dark = 1 - Math.abs(sxp - sw/2) / (sw/2) * 0.6;
+    var sxp2 = (x + (period>>1)) % period;
+    if (sxp2 < sw*0.8) dark = Math.max(dark, 1 - Math.abs(sxp2 - sw*0.4) / (sw*0.4) * 0.6);
+    var moire = 0.98 + 0.02 * Math.sin(y / 9 + x / 31);
+    var grime = Math.max(0, (y - W*0.62) / (W*0.38));
+    var blot = fbm(x/60, y/60, 303, 3);
+    var m = 1 - dark * 0.085 - grime * 0.22 * (0.5 + blot) - Math.max(0, blot - 0.62) * 0.9;
+    var r = (235 - dark*10) * (0.84 + n*0.16) * m * (0.94 + fine*0.12) * moire;
+    var g2 = (222 - dark*11) * (0.84 + n*0.16) * m * (0.94 + fine*0.12) * moire;
+    var b = (158 - dark*9) * (0.84 + n*0.16) * m * (0.94 + fine*0.12) * moire;
+    i = (y * W + x) * 4;
+    d[i] = clamp255(r); d[i+1] = clamp255(g2); d[i+2] = clamp255(b); d[i+3] = 255;
+  }
+  g.putImageData(img, 0, 0);
+}
+/* ---- CARPET: damp mottle (QA passed). */
+function paintCarpet(g){
+  var img = g.createImageData(W, W), d = img.data, x, y, i;
+  for (y = 0; y < W; y++) for (x = 0; x < W; x++){
+    var n = fbm(x/4, y/4, 411, 3);
+    var patch = fbm(x/90, y/90, 412, 4);
+    var wear = fbm(x/160, y/160, 413, 2);
+    var m = 0.72 + n*0.28;
+    m *= 1 - Math.max(0, patch - 0.55) * 0.75;
+    m *= 0.88 + wear * 0.24;
+    i = (y * W + x) * 4;
+    d[i] = clamp255(158*m); d[i+1] = clamp255(146*m); d[i+2] = clamp255(96*m); d[i+3] = 255;
+  }
+  g.putImageData(img, 0, 0);
+}
+/* ---- CEIL: drop tiles (QA passed). */
+function paintCeil(g){
+  var img = g.createImageData(W, W), d = img.data, x, y, i;
+  var tile = W / 2, seamW = 5;
+  for (y = 0; y < W; y++) for (x = 0; x < W; x++){
+    var tx = x % tile, ty = y % tile;
+    var speck = fbm(x/2.6, y/2.6, 511, 2);
+    var sag = fbm(x/110, y/110, 512, 3);
+    var base = 172 * (0.84 + speck * 0.2) * (0.9 + sag * 0.16);
+    var v = base * (vhash(x, y, 513) < 0.14 ? 0.78 : 1);
+    var edge = Math.min(tx, ty, tile - tx, tile - ty);
+    if (edge < seamW){ var k = edge / seamW; v *= 0.45 + 0.5 * k * k; }
+    i = (y * W + x) * 4;
+    d[i] = clamp255(v); d[i+1] = clamp255(v * 0.985); d[i+2] = clamp255(v * 0.94); d[i+3] = 255;
+  }
+  g.putImageData(img, 0, 0);
+}
+/* ---- PANEL v2: thin frame (18px), big diffuser with prismatic cells + hot center. */
+function paintPanel(g){
+  var img = g.createImageData(W, W), d = img.data, x, y, i;
+  var frame = 18;
+  for (y = 0; y < W; y++) for (x = 0; x < W; x++){
+    var v;
+    if (x >= frame && x < W - frame && y >= frame && y < W - frame){
+      var dx = (x - frame) / (W - 2*frame) - 0.5, dy = (y - frame) / (W - 2*frame) - 0.5;
+      var r = Math.max(Math.abs(dx), Math.abs(dy)) * 2;
+      var edgeFall = 1 - Math.pow(r, 6) * 0.30;
+      var prism = 0.97 + 0.03 * Math.sin(x / 5.2) * Math.sin(y / 5.2);
+      v = 256 * edgeFall * prism;
+    } else {
+      v = 92 * (0.9 + fbm(x/20, y/20, 611, 2) * 0.2);
+    }
+    i = (y * W + x) * 4;
+    d[i] = clamp255(v); d[i+1] = clamp255(v * 0.965); d[i+2] = clamp255(v * 0.83); d[i+3] = 255;
+  }
+  g.putImageData(img, 0, 0);
+}
+/* ---- ARMS v3: compact fists, slim flashlight head, subtle halo, cylinder-lit sleeves. */
+function paintArms(g){
+  g.clearRect(0, 0, 600, 368);
+  function taperLimb(x0, y0, x1, y1, w0, w1){
+    var a = Math.atan2(y1 - y0, x1 - x0);
+    g.beginPath();
+    g.arc(x0, y0, w0, a + Math.PI/2, a - Math.PI/2);
+    g.arc(x1, y1, w1, a - Math.PI/2, a + Math.PI/2);
+    g.closePath();
+  }
+  function sleeve(x0, y0, x1, y1, w0, w1){
+    var grad = g.createLinearGradient(x1 - w1, 0, x1 + w1, 0);
+    grad.addColorStop(0, '#1d1915'); grad.addColorStop(0.38, '#463d35');
+    grad.addColorStop(0.52, '#5e5349'); grad.addColorStop(0.68, '#463d35');
+    grad.addColorStop(1, '#221d19');
+    taperLimb(x0, y0, x1, y1, w0, w1);
+    g.fillStyle = grad; g.fill();
+    g.save(); g.clip();
+    // cylinder sheen: soft bright line down the limb axis
+    g.strokeStyle = 'rgba(200,182,138,0.08)'; g.lineWidth = 9;
+    g.beginPath(); g.moveTo(x0, y0); g.lineTo(x1, y1); g.stroke();
+    // rim light along the upper edge
+    g.strokeStyle = 'rgba(190,175,130,0.26)'; g.lineWidth = 4;
+    g.beginPath();
+    g.moveTo(x0 - w0*0.9, y0);
+    g.quadraticCurveTo((x0+x1)/2 - w1, (y0+y1)/2 - 16, x1 - w1*0.75, y1);
+    g.stroke();
+    // fold creases
+    g.strokeStyle = 'rgba(15,12,10,0.5)'; g.lineWidth = 3.5; g.lineCap = 'round';
+    var dx = x1-x0, dy = y1-y0, L = Math.hypot(dx, dy), nx = -dy/L, ny = dx/L;
+    for (var f = 1; f <= 3; f++){
+      var t = f/4;
+      var cx = x0 + dx*t + nx*(w0 + (w1-w0)*t)*0.5;
+      var cy = y0 + dy*t + ny*(w0 + (w1-w0)*t)*0.5;
+      g.beginPath(); g.moveTo(cx - nx*7, cy - ny*7 - 5);
+      g.quadraticCurveTo(cx + nx*9, cy + ny*9, cx + nx*14, cy + ny*14 + 3); g.stroke();
+    }
+    // cuff band near the wrist
+    var ct = 0.88, cw = w0 + (w1-w0)*ct;
+    var ccx = x0 + dx*ct, ccy = y0 + dy*ct;
+    taperLimb(x0 + dx*(ct-0.05), y0 + dy*(ct-0.05), x1, y1, w0 + (w1-w0)*(ct-0.05), w1);
+    g.clip();
+    g.fillStyle = 'rgba(104,92,72,0.55)';
+    g.fillRect(ccx - cw - 10, ccy - cw - 10, cw*2 + 20, cw*2 + 20);
+    g.restore();
+  }
+  sleeve(-16, 392, 120, 154, 52, 28);
+  sleeve(616, 392, 394, 176, 54, 30);
+
+  /* FLASHLIGHT: slim body, head barely wider, NO lens disc (seen from behind) */
+  function rrect(rx, ry, rw, rh, rad){ g.beginPath(); g.moveTo(rx+rad, ry);
+    g.arcTo(rx+rw, ry, rx+rw, ry+rh, rad); g.arcTo(rx+rw, ry+rh, rx, ry+rh, rad);
+    g.arcTo(rx, ry+rh, rx, ry, rad); g.arcTo(rx, ry, rx+rw, ry, rad); g.closePath(); }
+  // soft spill above the head only
+  var halo = g.createRadialGradient(392, 40, 2, 392, 40, 26);
+  halo.addColorStop(0, 'rgba(255,244,198,0.30)'); halo.addColorStop(1, 'rgba(255,244,198,0)');
+  g.fillStyle = halo; g.fillRect(362, 10, 60, 60);
+  // body
+  var bg = g.createLinearGradient(366, 0, 418, 0);
+  bg.addColorStop(0, '#282b30'); bg.addColorStop(0.3, '#565b64');
+  bg.addColorStop(0.5, '#747a86'); bg.addColorStop(0.72, '#464b54'); bg.addColorStop(1, '#20232a');
+  rrect(366, 44, 52, 170, 10); g.fillStyle = bg; g.fill();
+  // knurled band just above the grip
+  g.fillStyle = 'rgba(18,20,24,0.75)';
+  for (var k = 0; k < 5; k++) g.fillRect(370 + k*10, 108, 4, 26);
+  // head: slightly wider, dark, with a thin bright rim at its top edge
+  var hg = g.createLinearGradient(358, 0, 426, 0);
+  hg.addColorStop(0, '#2e3137'); hg.addColorStop(0.45, '#6d737f'); hg.addColorStop(1, '#26292e');
+  rrect(358, 24, 68, 24, 6); g.fillStyle = hg; g.fill();
+  g.fillStyle = 'rgba(255,246,214,0.85)';
+  rrect(362, 26, 60, 4, 2); g.fill();
+
+  /* HANDS: compact fists with parallel finger capsules */
+  function fist(hx, hy, rot, wrapW){
+    // wrapW: flashlight body half-width when gripping (fingers wrap around it)
+    g.save(); g.translate(hx, hy); g.rotate(rot);
+    // palm / back of hand
+    var pg = g.createRadialGradient(-5, -3, 3, 0, 0, 26);
+    pg.addColorStop(0, '#c9a184'); pg.addColorStop(0.6, '#b08867'); pg.addColorStop(1, '#84624a');
+    g.beginPath(); g.ellipse(0, 0, 16, 20, 0, 0, Math.PI*2); g.fillStyle = pg; g.fill();
+    // 4 parallel finger capsules; when wrapping, they arc across the object
+    for (var f = 0; f < 4; f++){
+      var fy = -13 + f * 8.6, flen = (17 - f * 1.2) + (wrapW ? wrapW * 0.9 : 0);
+      g.save(); g.translate(f === 3 ? -2 : 1, fy);
+      var fg = g.createLinearGradient(0, -4.2, 0, 4.2);
+      fg.addColorStop(0, '#d2ab8e'); fg.addColorStop(1, '#9a7450');
+      g.fillStyle = fg;
+      var fr = 4.2 - f * 0.25;
+      g.beginPath();
+      g.moveTo(0, -fr);
+      g.quadraticCurveTo(flen, -fr + 2, flen + 8, 0);
+      g.quadraticCurveTo(flen, fr - 2, 0, fr);
+      g.closePath(); g.fill();
+      // knuckle crease
+      g.strokeStyle = 'rgba(88,60,36,0.65)'; g.lineWidth = 1.1;
+      g.beginPath(); g.moveTo(flen * 0.62, -fr + 0.5); g.lineTo(flen * 0.62, fr - 0.5); g.stroke();
+      g.restore();
+    }
+    // thumb: vertical capsule on the near side
+    g.beginPath();
+    if (wrapW) g.ellipse(-11, 4, 5.5, 11, -0.2, 0, Math.PI*2);
+    else g.ellipse(13, 5, 5.5, 11, 0.25, 0, Math.PI*2);
+    g.fillStyle = '#c49e80'; g.fill();
+    g.strokeStyle = 'rgba(88,60,36,0.45)'; g.lineWidth = 1;
+    if (wrapW) g.stroke();
+    // wrist shadow into sleeve
+    var ws = g.createLinearGradient(0, 12, 0, 28);
+    ws.addColorStop(0, 'rgba(58,38,24,0.42)'); ws.addColorStop(1, 'rgba(58,38,24,0)');
+    g.fillStyle = ws; g.fillRect(-26, 12, 52, 16);
+    g.restore();
+  }
+  fist(120, 150, -0.10, 0);          // left: relaxed fist
+  fist(392, 176, 0.05, 26);          // right: wraps the body's lower third
+}
+
+var P = { wall: paintWall, carpet: paintCarpet, ceil: paintCeil, panel: paintPanel };
+Object.keys(P).forEach(function(k){ P[k](ctxOf(k)); });
+paintArms(ctxOf('arms'));
+
+function down64(srcId){
+  var s = document.getElementById(srcId), t = document.createElement('canvas');
+  var sw = srcId === 'arms' ? [300, 184] : [64, 64];
+  t.width = sw[0]; t.height = sw[1];
+  var g = t.getContext('2d');
+  g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
+  g.drawImage(s, 0, 0, t.width, t.height);
+  return t;
+}
+['wall','carpet','ceil','panel'].forEach(function(k){
+  var t = down64(k), sheet = document.createElement('canvas');
+  sheet.width = 192; sheet.height = 192; sheet.id = k + 'sheet';
+  sheet.style.cssText = 'border:1px solid #555';
+  document.body.appendChild(sheet); document.body.appendChild(document.createElement('br'));
+  var sg = sheet.getContext('2d');
+  for (var ty = 0; ty < 3; ty++) for (var tx = 0; tx < 3; tx++) sg.drawImage(t, tx*64, ty*64);
+});
+var a = down64('arms');
+a.id = 'armssheet'; a.style.cssText = 'border:1px solid #555;background:#3a3128';
+document.body.appendChild(a);
+document.getElementById('status').textContent = 'done';
+</script></body></html>

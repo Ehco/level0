@@ -1,0 +1,7 @@
+# transient build/test artifacts
+dev/audit_lines.txt
+*.log
+
+# GitHub device-flow scratch (never commit tokens)
+gh_device.json
+gh_device.env

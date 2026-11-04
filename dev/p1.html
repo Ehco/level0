@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LEVEL 0</title>
+<style>
+html,body{margin:0;padding:0;height:100%;background:#000;overflow:hidden}
+body{display:flex;align-items:center;justify-content:center}
+#stage{position:relative}
+#cv{display:block;image-rendering:crisp-edges;image-rendering:pixelated;background:#000}
+.ov{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+    color:#d8b45a;font-family:'Courier New',Courier,monospace;text-align:center;background:rgba(0,0,0,0.88)}
+.ov h1{font-size:34px;letter-spacing:10px;margin:0 0 8px 0;font-weight:normal}
+.ov h2{font-size:20px;letter-spacing:6px;margin:0 0 10px 0;font-weight:normal}
+.ov p{font-size:12px;margin:3px 0;opacity:0.85}
+.ctl{opacity:0.6;font-size:11px;margin-top:12px;line-height:1.7}
+button{background:none;border:1px solid #d8b45a;color:#d8b45a;font-family:inherit;font-size:13px;
+       padding:5px 18px;margin:4px;cursor:pointer;letter-spacing:2px}
+button:hover{background:#d8b45a;color:#000}
+input{background:#000;border:1px solid #776a3a;color:#d8b45a;font-family:inherit;font-size:13px;
+      padding:4px 8px;text-align:center;width:180px;outline:none}
+#hud{position:absolute;inset:0;pointer-events:none;font-family:'Courier New',Courier,monospace;color:#d8b45a}
+#stam{position:absolute;left:10px;bottom:10px;width:120px;height:5px;border:1px solid #6b5f33;background:rgba(0,0,0,0.5)}
+#stamF{height:100%;width:100%;background:#d8b45a}
+#seedLbl{position:absolute;right:10px;bottom:9px;font-size:11px;opacity:0.65}
+#fpsOv{position:absolute;left:10px;top:8px;font-size:11px;display:none;white-space:pre;opacity:0.8}
+#fadeOv{position:absolute;inset:0;background:#000;opacity:0;pointer-events:none}
+.hidden{display:none !important}
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="cv" width="320" height="180"></canvas>
+  <div id="hud">
+    <div id="stam"><div id="stamF"></div></div>
+    <div id="seedLbl"></div>
+    <div id="fpsOv"></div>
+  </div>
+  <div id="fadeOv"></div>
+  <div id="titleOv" class="ov">
+    <h1>LEVEL 0</h1>
+    <p>you noclipped out of reality. keep moving.</p>
+    <p style="margin-top:14px"><input id="seedInp" placeholder="seed (blank = random)"></p>
+    <button id="startBtn">ENTER</button>
+    <p class="ctl">WASD / mouse look &nbsp;·&nbsp; Shift sprint &nbsp;·&nbsp; arrows alone work too<br>
+    M mute &nbsp;·&nbsp; F fps &nbsp;·&nbsp; 1/2/3 quality &nbsp;·&nbsp; Esc pause</p>
+  </div>
+  <div id="pauseOv" class="ov hidden">
+    <h2>PAUSED</h2>
+    <button id="resumeBtn">RESUME</button>
+    <button id="restartBtn">RESTART</button>
+    <button id="muteBtn">MUTE</button>
+  </div>
+  <div id="deadOv" class="ov hidden">
+    <h1>YOU ARE LOST</h1>
+    <p>R — retry same seed &nbsp;·&nbsp; ENTER — new seed</p>
+  </div>
+</div>
+<script>
+'use strict';
+/* ============================================================================
+   LEVEL 0 — Infinite Backrooms. Single-file software raycaster.
+   Sections in this file map to spec sections 3-11.
+   All tuning constants are in TUNE (this section) unless noted inline.
+   ========================================================================= */
+
+/* ---------------------------------------------------------------- §9 budgets
+   TIER table: [internal W, H, draw distance, floor casting on] */
+var TIERS = [[320,180,24,true],[240,135,16,true],[200,112,12,false]];
+var TUNE = {
+  WALK:3.0, SPRINT:5.2,               // §6 player speeds (u/s)
+  STAM_DRAIN:4.0, STAM_REGEN:6.0, STAM_MIN:0.15, // §6 stamina (s, s, fraction)
+  P_RAD:0.2,                          // §6 player collision radius
+  BOB_AMP:0.03, BOB_PITCH:2,          // §6 head bob (units, px)
+  ROT_SPEED:2.8, MOUSE_SENS:0.0025,   // §6 fallback rotate speed / mouse
+  M_ROAM:1.4, M_CHASE:4.4, M_RAD:0.28,// §7 monster speeds (u/s) + radius
+  M_HEIGHT:2.2, M_WIDTH:1.1,          // §7 monster world size
+  GRACE:20, ODO_SPAWN:30,             // §7 spawn gate: seconds | cells walked
+  SPAWN_MIN:18, SPAWN_MAX:26,         // §7 spawn distance (u)
+  DESPAWN_D:40, DESPAWN_T:60,         // §7 despawn distance/time
+  CATCH_D:0.6,                        // §7 catch distance
+  HEAR_D:10,                          // §7 sprint hearing distance
+  LOSE_T:4,                           // §7 CHASE->SEARCH after LOS lost (s)
+  REPATH:0.5,                         // §7 CHASE repath interval (s)
+  SEARCH_WAIT:3, SEARCH_T:15,         // §7 search wait / give-up (s)
+  ASTAR_WIN:21, ASTAR_CAP:256,        // §7 A* window / node cap
+  BB_MIN:45, BB_VAR:75,               // §4.4 blackout interval 45-120 s
+  BB_DUR_MIN:2, BB_DUR_VAR:2,         // §4.4 blackout duration 2-4 s
+  BB_LIGHT:0.15,                      // §4.4 light level during blackout
+  TIER_FPS2:28, TIER_FPS3:24,         // §9 auto-drop thresholds
+  TIER_WINDOW:3, TIER_HYST:10,        // §9 averaging window / hysteresis (s)
+  PRUNE_R:4, GEN_R:3, MAX_CHUNKS:49,  // §4.1 chunk radii + hard cap (7x7=49)
+  FOV_PLANE:0.649                     // tan(FOV/2), FOV=66deg (§3.1)
+};
+
+/* ------------------------------------------------------------------- §2 audit
+   Console capture so SELF_AUDIT can prove "zero console errors/warnings". */
+var __errs = [];
+(function(){
+  function cap(kind){
+    return function(){
+      var a = [];
+      for (var i = 0; i < arguments.length; i++) a.push(String(arguments[i]));
+      __errs.push(kind + ': ' + a.join(' '));
+      // keep real console behaviour
+      var f = kind === 'error' ? console.error : console.warn;
+      try { f.apply(console, a); } catch (e) {}
+    };
+  }
+  console.error = cap('error');
+  console.warn = cap('warn');
+  window.onerror = function(m, s, l, c){ __errs.push('error: ' + m + ' @' + l + ':' + c); };
+  window.addEventListener('unhandledrejection', function(e){
+    __errs.push('error: unhandledrejection ' + e.reason);
+  });
+})();
+
+/* --------------------------------------------------------------- §2 / §12 audit
+   Throttled world log (drives the "prune verified by logging" checklist item). */
+function logWorld(){
+  console.log('[L0] t=' + G.time.toFixed(0) + 's chunks=' + chunks.size +
+              ' pos=' + P.x.toFixed(1) + ',' + P.y.toFixed(1) +
+              ' tier=' + (G.tier + 1) + ' mon=' + (M.active ? M.state : 'none'));
+}
+
+/* ------------------------------------------------------- deterministic hashing
+   splitmix-style 32-bit mixing; all world randomness flows through here. */
+function hash32(a, b, c, d){
+  var h = (Math.imul(a | 0, 0x9E3779B1) ^ Math.imul(b | 0, 0x85EBCA77) ^
+           Math.imul(c | 0, 0xC2B2AE3D) ^ (d | 0)) | 0;
+  h = (h ^ (h >>> 15)) | 0;
+  h = Math.imul(h, 0x27D4EB2D);
+  h = (h ^ (h >>> 13)) | 0;
+  return (h ^ (h >>> 16)) >>> 0;
+}
+/* mulberry32 PRNG seeded from hash32 — order independent per chunk */
+function rngFrom(s){
+  var a = s >>> 0;
+  return function(){
+    a = (a + 0x6D2B79F5) | 0;
+    var t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function seedFromString(str){
+  if (!str) return (Date.now() ^ (Math.random() * 0xffffffff)) >>> 0;
+  var h = 2166136261, i;
+  for (i = 0; i < str.length; i++){
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+/* ------------------------------------------------------------- §4 world model
+   chunks: Map "cx,cy" -> {cells:Uint8Array(256), light:Uint8Array(16)}
+   cell values: 0 floor, 1 wall, 2 solid pillar. 16x16 cells per chunk. */
+var worldSeed = 1;
+var chunks = new Map();
+var lcx = 1e9, lcy = 1e9, lch = null;          // last-chunk cache (hot path)
+var DBG = { gens:0, astarCalls:0, astarMaxNodes:0, astarOverflows:0 };
+
+function chunkGet(cx, cy){
+  if (cx === lcx && cy === lcy) return lch;
+  var key = cx + ',' + cy;
+  var ch = chunks.get(key);
+  if (!ch){ ch = genChunk(cx, cy); chunks.set(key, ch); }
+  lcx = cx; lcy = cy; lch = ch;
+  return ch;
+}
+function invalidateChunkCache(){ lcx = 1e9; lcy = 1e9; lch = null; }
+
+function cellAt(gx, gy){
+  return chunkGet(gx >> 4, gy >> 4).cells[((gy & 15) << 4) + (gx & 15)];
+}
+function isSolid(gx, gy){ return cellAt(gx, gy) !== 0; }
+
+/* §4.4 lighting: per 4x4-cell block, fixed-point multipliers */
+function lightMulB(bx, by){
+  var ch = chunkGet(bx >> 2, by >> 2);
+  var v = ch.light[(by & 3) * 4 + (bx & 3)];
+  return v === 2 ? 256 : (v === 1 ? 148 : 78);
+}
+function lightMul(gx, gy){
+  return lightMulB(gx >> 2, gy >> 2);
+}
+function lightRaw(gx, gy){
+  var ch = chunkGet(gx >> 4, gy >> 4);
+  return ch.light[((gy >> 2) & 3) * 4 + ((gx >> 2) & 3)];
+}
+
+/* --------------------------------------------------- §4.2 pure edge openings
+   openingsFor(vert, line, other): positions (1..14) of open cells on one edge.
+   vert=true  -> vertical boundary at chunk-line x=line, between chunk (line-1,other)
+                 and (line,other); returns Y positions.
+   vert=false -> horizontal boundary at chunk-line y=line; returns X positions.
+   Pure function of (seed, vert, line, other): both neighbours compute the
+   identical list, so adjacent chunks always agree. */
+function openingsFor(vert, line, other){
+  var rng = rngFrom(hash32(worldSeed, vert ? 11 : 17, line, other));
+  var count = 2 + (rng() * 3 | 0);            // 2-4 openings
+  var arr = [], p;
+  while (arr.length < count){
+    p = 1 + (rng() * 14 | 0);                 // 1..14, corners excluded
+    if (arr.indexOf(p) < 0) arr.push(p);
+  }
+  return arr;
+}
+
+/* --------------------------------------------------------- §4.3 chunk generation */
+function repairConnectivity(cells, opens){
+  var reached = new Uint8Array(256);
+  var stack = [];
+  function flood(){
+    var fi, n;
+    for (fi = 0; fi < 256; fi++) reached[fi] = 0;
+    stack.length = 0;
+    stack.push(opens[0]);
+    reached[opens[0]] = 1;
+    while (stack.length){
+      n = stack.pop();
+      var nx = n & 15, ny = n >> 4, d;
+      for (d = 0; d < 4; d++){
+        var ox = nx + (d === 0 ? 1 : d === 1 ? -1 : 0);
+        var oy = ny + (d === 2 ? 1 : d === 3 ? -1 : 0);
+        if (ox < 0 || ox > 15 || oy < 0 || oy > 15) continue;
+        var q = (oy << 4) + ox;
+        if (!reached[q] && cells[q] === 0){ reached[q] = 1; stack.push(q); }
+      }
+    }
+  }
+  flood();
+  for (var i = 1; i < opens.length; i++){
+    if (!reached[opens[i]]){
+      // carve straight line from this opening to nearest reached cell
+      var best = -1, bd = 1e9, bx2 = opens[i] & 15, by2 = opens[i] >> 4, k;
+      for (k = 0; k < 256; k++){
+        if (!reached[k]) continue;
+        var dx = (k & 15) - bx2, dy = (k >> 4) - by2, d2 = dx * dx + dy * dy;
+        if (d2 < bd){ bd = d2; best = k; }
+      }
+      if (best >= 0){
+        var cx0 = bx2, cy0 = by2, cx1 = best & 15, cy1 = best >> 4;
+        var sx2 = cx0, sy2 = cy0;
+        var ddx = Math.abs(cx1 - cx0), ddy = -Math.abs(cy1 - cy0);
+        var ex = ddx + ddy, step = cx0 < cx1 ? 1 : -1, sty = cy0 < cy1 ? 1 : -1;
+        while (true){
+          cells[(sy2 << 4) + sx2] = 0;
+          if (sx2 === cx1 && sy2 === cy1) break;
+          var e2 = 2 * ex, mx = 0, my = 0, oy2 = sy2;
+          if (e2 >= ddy){ ex += ddy; sx2 += step; mx = 1; }
+          if (e2 <= ddx){ ex += ddx; sy2 += sty; my = 1; }
+          if (mx && my) cells[(oy2 << 4) + sx2] = 0; // bridge diagonal step: 4-connectivity
+        }
+      }
+      flood(); // re-flood after carve
+    }
+  }
+  // unreachable pockets -> wall (safe: unreachable anyway)
+  for (i = 0; i < 256; i++) if (cells[i] === 0 && !reached[i]) cells[i] = 1;
+}
+
+function genChunk(cx, cy){
+  DBG.gens++;
+  var cells = new Uint8Array(256);
+  var rng = rngFrom(hash32(worldSeed, cx, cy, 0x51AB3));
+  var arch, r = rng();
+  if (cx === 0 && cy === 0) arch = 0;                    // §4.3 spawn archetype
+  else arch = r < 0.34 ? 0 : r < 0.62 ? 1 : r < 0.85 ? 2 : 3;
+  var x, y, i, k;
+
+  if (arch === 0){ // OPEN_OFFICE: sparse walls + pillar grid every ~5, 30% skip
+    for (i = 0; i < 256; i++) cells[i] = 0;
+    for (y = 2; y < 16; y += 5){
+      for (x = 2; x < 16; x += 5){
+        if (rng() < 0.3) continue;
+        cells[(y << 4) + x] = 2;
+        if (rng() < 0.5 && x + 1 < 16) cells[(y << 4) + x + 1] = 2;
+      }
+    }
+    for (i = 0; i < 256; i++) if (cells[i] === 0 && rng() < 0.05) cells[i] = 1;
+  }
+  else if (arch === 1){ // MAZE: dense 2-thick wall segments -> corridors 2-3 wide
+    for (i = 0; i < 256; i++) cells[i] = 0;
+    var segs = 9 + (rng() * 7 | 0);
+    for (i = 0; i < segs; i++){
+      var horiz = rng() < 0.5;
+      var sx = 1 + (rng() * 14 | 0), sy = 1 + (rng() * 14 | 0), len = 4 + (rng() * 9 | 0);
+      for (k = 0; k < len; k++){
+        var wx = horiz ? sx + k : sx, wy = horiz ? sy : sy + k;
+        if (wx > 15 || wy > 15) break;
+        cells[(wy << 4) + wx] = 1;
+        var wx2 = wx + (horiz ? 0 : 1), wy2 = wy + (horiz ? 1 : 0);
+        if (wx2 < 16 && wy2 < 16) cells[(wy2 << 4) + wx2] = 1;
+      }
+    }
+  }
+  else if (arch === 2){ // HALLS: long straight walls, irregular hallway grid
+    for (i = 0; i < 256; i++) cells[i] = 0;
+    var lines = [], nv = 2 + (rng() * 2 | 0), nh = 2 + (rng() * 2 | 0), li;
+    for (li = 0; li < nv; li++) lines.push({ v: 1, p: 2 + (rng() * 12 | 0) });
+    for (li = 0; li < nh; li++) lines.push({ v: 0, p: 2 + (rng() * 12 | 0) });
+    for (li = 0; li < lines.length; li++){
+      var ln = lines[li];
+      for (i = 0; i < 16; i++){
+        if (ln.v) cells[(i << 4) + ln.p] = 1; else cells[(ln.p << 4) + i] = 1;
+      }
+      var gaps = 3 + (rng() * 3 | 0), g;
+      for (g = 0; g < gaps; g++){
+        var gp = 1 + (rng() * 14 | 0);
+        if (ln.v) cells[(gp << 4) + ln.p] = 0; else cells[(ln.p << 4) + gp] = 0;
+      }
+    }
+  }
+  else { // ATRIUM: mostly open, few large slabs
+    for (i = 0; i < 256; i++) cells[i] = 0;
+    var slabs = 1 + (rng() * 2 | 0);
+    for (i = 0; i < slabs; i++){
+      var sw = 3 + (rng() * 5 | 0), sh = 3 + (rng() * 5 | 0);
+      var ox = 1 + (rng() * 11 | 0), oy = 1 + (rng() * 11 | 0);
+      for (y = oy; y < oy + sh && y < 16; y++)
+        for (x = ox; x < ox + sw && x < 16; x++) cells[(y << 4) + x] = 1;
+    }
+  }
+
+  // border openings — pure edge function, both sides agree by construction
+  var opens = [], pw, e;
+  pw = openingsFor(true, cx, cy);         for (e = 0; e < pw.length; e++){ cells[pw[e] << 4] = 0; opens.push(pw[e] << 4); }
+  pw = openingsFor(true, cx + 1, cy);     for (e = 0; e < pw.length; e++){ cells[(pw[e] << 4) + 15] = 0; opens.push((pw[e] << 4) + 15); }
+  pw = openingsFor(false, cy, cx);        for (e = 0; e < pw.length; e++){ cells[pw[e]] = 0; opens.push(pw[e]); }
+  pw = openingsFor(false, cy + 1, cx);    for (e = 0; e < pw.length; e++){ cells[(15 << 4) + pw[e]] = 0; opens.push((15 << 4) + pw[e]); }
+
+  DBG.preRepair = { cells: cells.slice(), opens: opens.slice(), cx: cx, cy: cy };
+  repairConnectivity(cells, opens);
+
+  // §4.4 per-4x4-block lighting: lit 80% / dim 15% / dark 5%
+  var light = new Uint8Array(16);
+  for (y = 0; y < 4; y++) for (x = 0; x < 4; x++){
+    var lr = hash32(worldSeed, cx * 4 + x, cy * 4 + y, 0x1F2E3C) % 100;
+    light[y * 4 + x] = lr < 80 ? 2 : (lr < 95 ? 1 : 0);
+  }
+  return { cells: cells, light: light, cx: cx, cy: cy };
+}
+
+/* §4.1 bounded chunk set: generate radius 3, prune beyond radius 4 */
+function pruneChunks(){
+  var pcx = Math.floor(P.x / 16), pcy = Math.floor(P.y / 16);
+  var key, pos, cx, cy, drop = false;
+  var it = chunks.keys();
+  var doomed = [];
+  while (!(pos = it.next()).done){
+    key = pos.value;
+    var c = key.split(',');
+    cx = +c[0]; cy = +c[1];
+    if (Math.max(Math.abs(cx - pcx), Math.abs(cy - pcy)) > TUNE.PRUNE_R) doomed.push(key);
+  }
+  for (key = 0; key < doomed.length; key++) chunks.delete(doomed[key]);
+  if (doomed.length) invalidateChunkCache();
+  // hard cap: trim down to the radius-3 set (49 chunks) — regen is deterministic + sub-ms
+  if (chunks.size > TUNE.MAX_CHUNKS){
+    var it2 = chunks.keys(), trim = [];
+    while (!(pos = it2.next()).done){
+      var c2 = pos.value.split(',');
+      if (Math.max(Math.abs(+c2[0] - pcx), Math.abs(+c2[1] - pcy)) > TUNE.GEN_R) trim.push(pos.value);
+    }
+    for (key = 0; key < trim.length && chunks.size > TUNE.MAX_CHUNKS; key++) chunks.delete(trim[key]);
+    invalidateChunkCache();
+  }
+  return chunks.size;
+}
